@@ -1,0 +1,6 @@
+target
+.git
+.codex
+*.log
+Dockerfile
+.dockerignore
