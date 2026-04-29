@@ -4,7 +4,7 @@ This service is the Kubernetes collector for PingPongKong.
 
 It does three jobs:
 
-1. Fetches `matrix.yaml` and `discord.yaml` from a Git-backed raw config URL.
+1. Fetches `k8s/<cluster>.yaml` and `notification/discord.yaml` from a Git-backed config repository.
 2. Validates the files and publishes the current config into a Kubernetes ConfigMap when it changes.
 3. Scrapes PingPongKong agents for probe results and sends Discord alerts when probes fail.
 
@@ -17,8 +17,8 @@ The collector runs as a Kubernetes Deployment.
 On each sync cycle it reads:
 
 ```text
-matrix.yaml
-discord.yaml
+k8s/<CONFIG_GIT_CLUSTERNAME>.yaml
+notification/discord.yaml
 ```
 
 If the files changed, it writes this ConfigMap, by default:
@@ -29,7 +29,7 @@ pingpongkong-current-matrix
 
 Agents watch that ConfigMap and reload when it changes.
 
-If `matrix.yaml` and `discord.yaml` are the same as the last successful sync,
+If the Kubernetes matrix file and Discord notification file are the same as the last successful sync,
 the collector skips the ConfigMap write.
 
 The collector also finds running agent pods, calls their JSON results endpoint, and alerts Discord for failed checks.
@@ -37,20 +37,30 @@ The collector also finds running agent pods, calls their JSON results endpoint, 
 ## Required Environment
 
 ```text
-CONFIG_BASE_URL
+CONFIG_GIT_URL
+CONFIG_GIT_CLUSTERNAME
 ```
 
 Example:
 
 ```bash
-CONFIG_BASE_URL=https://example.com/raw/main cargo run
+CONFIG_GIT_URL=https://gitlab.company.com/group/pingpongkong-state \
+CONFIG_GIT_CLUSTERNAME=h100-cluster \
+cargo run
 ```
+
+For private repositories, also set:
+
+```text
+CONFIG_GIT_TOKEN
+```
+
+The collector derives raw file URLs from the repository URL and uses the repository default branch via `HEAD`.
+GitHub repositories use bearer token auth; GitLab-compatible repositories use the `PRIVATE-TOKEN` header.
 
 ## Useful Options
 
 ```text
-GIT_TOKEN
-GIT_TOKEN_HEADER=bearer
 K8S_NAMESPACE=default
 CONFIG_MAP_NAME=pingpongkong-current-matrix
 SYNC_INTERVAL_SECONDS=60
@@ -61,16 +71,11 @@ MAX_CONCURRENT_AGENT_SCRAPES=64
 DRY_RUN=false
 ```
 
-For GitLab private token auth:
-
-```text
-GIT_TOKEN_HEADER=private-token
-```
-
 ## Local Dry Run
 
 ```bash
-CONFIG_BASE_URL=https://example.com/raw/main \
+CONFIG_GIT_URL=https://gitlab.company.com/group/pingpongkong-state \
+CONFIG_GIT_CLUSTERNAME=h100-cluster \
 DRY_RUN=true \
 cargo run
 ```

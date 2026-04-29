@@ -48,52 +48,26 @@ impl AppConfig {
 
 #[derive(Debug, Clone)]
 pub struct SourceConfig {
-    pub base_url: String,
+    pub git_url: String,
     pub matrix_path: String,
     pub discord_path: String,
     pub token: Option<String>,
-    pub token_header: TokenHeader,
 }
 
 impl SourceConfig {
     /// Args: none.
-    /// Reads source-related environment variables for the raw Git-backed config files.
+    /// Reads source-related environment variables for the Git-backed config files.
     fn from_env() -> anyhow::Result<Self> {
-        let base_url = env::var("CONFIG_BASE_URL")
-            .or_else(|_| env::var("GIT_RAW_BASE_URL"))
-            .context("CONFIG_BASE_URL or GIT_RAW_BASE_URL must be set")?;
+        let git_url = env::var("CONFIG_GIT_URL").context("CONFIG_GIT_URL must be set")?;
+        let cluster_name =
+            env::var("CONFIG_GIT_CLUSTERNAME").context("CONFIG_GIT_CLUSTERNAME must be set")?;
 
         Ok(Self {
-            base_url,
-            matrix_path: env_or("MATRIX_PATH", "matrix.yaml"),
-            discord_path: env_or("DISCORD_PATH", "discord.yaml"),
-            token: env::var("GIT_TOKEN").ok(),
-            token_header: TokenHeader::from_env()?,
+            git_url,
+            matrix_path: format!("k8s/{cluster_name}.yaml"),
+            discord_path: "notification/discord.yaml".to_string(),
+            token: env::var("CONFIG_GIT_TOKEN").ok(),
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum TokenHeader {
-    Bearer,
-    GitLabPrivateToken,
-}
-
-impl TokenHeader {
-    /// Args: none.
-    /// Parses `GIT_TOKEN_HEADER` into the supported outbound authentication header strategy.
-    fn from_env() -> anyhow::Result<Self> {
-        match env_or("GIT_TOKEN_HEADER", "bearer")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "bearer" | "authorization" => Ok(Self::Bearer),
-            "private-token" | "gitlab" | "gitlab-private-token" => Ok(Self::GitLabPrivateToken),
-            value => anyhow::bail!(
-                "unsupported GIT_TOKEN_HEADER '{}'; use bearer or private-token",
-                value
-            ),
-        }
     }
 }
 

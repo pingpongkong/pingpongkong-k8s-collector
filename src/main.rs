@@ -40,10 +40,12 @@ struct HealthResponse {
 /// Starts logging, loads environment config, launches sync/scrape loops, and serves health checks.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "pingpongkong_k8s_collector=info,info".into()),
+                .unwrap_or_else(|_| "pingpongkong_k8s_collector=debug,debug".into()),
         )
         .init();
 

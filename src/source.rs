@@ -1,5 +1,5 @@
 use crate::{
-    config::{SourceConfig, TokenHeader},
+    config::SourceConfig,
     models::{DiscordConfig, MatrixConfig, PublishedConfig},
 };
 use anyhow::Context;
@@ -19,7 +19,7 @@ pub struct LoadedConfig {
 }
 
 impl ConfigSource {
-    /// Args: `config` contains the raw config base URL, file paths, and optional auth details.
+    /// Args: `config` contains the config repository URL, file paths, and optional auth details.
     /// Builds a source client for fetching PingPongKong state files.
     pub fn new(config: SourceConfig) -> Self {
         Self {
@@ -62,14 +62,11 @@ impl ConfigSource {
     /// Args: `path` is the config file path relative to the configured base URL.
     /// Downloads one raw config file and returns its body as text.
     async fn fetch(&self, path: &str) -> anyhow::Result<String> {
-        let url = join_url(&self.config.base_url, path)?;
+        let url = raw_file_url(&self.config.git_url, path)?;
         let mut request = self.client.get(url);
 
         if let Some(token) = &self.config.token {
-            request = match self.config.token_header {
-                TokenHeader::Bearer => request.bearer_auth(token),
-                TokenHeader::GitLabPrivateToken => request.header("PRIVATE-TOKEN", token),
-            };
+            request = apply_git_token(request, &self.config.git_url, token);
         }
 
         let response = request.send().await.context("failed to fetch config")?;
@@ -90,14 +87,90 @@ impl ConfigSource {
     }
 }
 
-/// Args: `base` is the raw source base URL, `path` is the relative file path.
-/// Joins the URL parts without losing nested paths or accidentally duplicating slashes.
-fn join_url(base: &str, path: &str) -> anyhow::Result<Url> {
-    let mut base = base.trim_end_matches('/').to_string();
-    base.push('/');
-    Url::parse(&base)
-        .and_then(|url| url.join(path.trim_start_matches('/')))
-        .context("CONFIG_BASE_URL must be a valid URL")
+/// Args: `request` is the outbound request, `git_url` identifies the provider, and `token` is the Git token.
+/// Applies the provider-specific token header for private repositories.
+fn apply_git_token(
+    request: reqwest::RequestBuilder,
+    git_url: &str,
+    token: &str,
+) -> reqwest::RequestBuilder {
+    if git_url_host(git_url).is_some_and(|host| host.eq_ignore_ascii_case("github.com")) {
+        request.bearer_auth(token)
+    } else {
+        request.header("PRIVATE-TOKEN", token)
+    }
+}
+
+/// Args: `git_url` is the repository URL, `path` is the config file path inside the repository.
+/// Builds a raw-file URL using the repository default branch via `HEAD`.
+fn raw_file_url(git_url: &str, path: &str) -> anyhow::Result<Url> {
+    let repo = normalized_repo_url(git_url)?;
+    let path = path.trim_start_matches('/');
+
+    if repo
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
+    {
+        github_raw_url(repo, path)
+    } else {
+        gitlab_raw_url(repo, path)
+    }
+}
+
+/// Args: `git_url` is the configured repository URL.
+/// Parses and normalizes common copy-pasted repository URLs.
+fn normalized_repo_url(git_url: &str) -> anyhow::Result<Url> {
+    let mut repo = Url::parse(git_url.trim()).context("CONFIG_GIT_URL must be a valid URL")?;
+    repo.set_query(None);
+    repo.set_fragment(None);
+
+    let normalized_path = repo
+        .path()
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_string();
+    repo.set_path(&normalized_path);
+
+    Ok(repo)
+}
+
+/// Args: `repo` is a github.com repository URL, `path` is the file path inside the repository.
+/// Returns the raw.githubusercontent.com URL for the repository default branch.
+fn github_raw_url(repo: Url, path: &str) -> anyhow::Result<Url> {
+    let segments: Vec<_> = repo
+        .path_segments()
+        .context("CONFIG_GIT_URL must include a GitHub owner and repository")?
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    anyhow::ensure!(
+        segments.len() >= 2,
+        "CONFIG_GIT_URL must include a GitHub owner and repository"
+    );
+
+    Url::parse(&format!(
+        "https://raw.githubusercontent.com/{}/{}/HEAD/{}",
+        segments[0], segments[1], path
+    ))
+    .context("failed to build GitHub raw URL")
+}
+
+/// Args: `repo` is a GitLab-compatible repository URL, `path` is the file path inside the repository.
+/// Returns the GitLab raw URL for the repository default branch.
+fn gitlab_raw_url(mut repo: Url, path: &str) -> anyhow::Result<Url> {
+    let mut repo_path = repo.path().trim_end_matches('/').to_string();
+    repo_path.push_str("/-/raw/HEAD/");
+    repo_path.push_str(path);
+    repo.set_path(&repo_path);
+    Ok(repo)
+}
+
+/// Args: `git_url` is the configured repository URL.
+/// Returns the lowercase host when the URL parses successfully.
+fn git_url_host(git_url: &str) -> Option<String> {
+    Url::parse(git_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
 }
 
 /// Args: `matrix_yaml` and `discord_yaml` are the raw config file contents.
@@ -137,5 +210,37 @@ mod tests {
     fn config_hash_changes_when_content_changes() {
         assert_ne!(config_hash("a", "b"), config_hash("a", "c"));
         assert_ne!(config_hash("a", "b"), config_hash("x", "b"));
+    }
+
+    /// Args: none.
+    /// Verifies that GitHub repository URLs are converted to raw file URLs on the default branch.
+    #[test]
+    fn raw_file_url_supports_github_repo_urls() {
+        let url = raw_file_url(
+            "https://github.com/acme/pingpongkong-state.git",
+            "k8s/prod.yaml",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://raw.githubusercontent.com/acme/pingpongkong-state/HEAD/k8s/prod.yaml"
+        );
+    }
+
+    /// Args: none.
+    /// Verifies that GitLab-compatible repository URLs are converted to raw file URLs on the default branch.
+    #[test]
+    fn raw_file_url_supports_gitlab_repo_urls() {
+        let url = raw_file_url(
+            "https://gitlab.company.com/group/subgroup/pingpongkong-state",
+            "notification/discord.yaml",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://gitlab.company.com/group/subgroup/pingpongkong-state/-/raw/HEAD/notification/discord.yaml"
+        );
     }
 }
