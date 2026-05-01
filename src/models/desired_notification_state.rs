@@ -47,6 +47,8 @@ pub struct DesiredNotificationFile {
     #[serde(default)]
     pub webhook: Option<Webhook>,
     #[serde(default)]
+    pub telegram: Option<Telegram>,
+    #[serde(default)]
     pub display: DisplaySettings,
     #[serde(default)]
     pub rate_limit: NotificationRateLimit,
@@ -59,6 +61,7 @@ impl DesiredNotificationFile {
         NotificationDestination {
             provider: self.provider,
             webhook: self.webhook,
+            telegram: self.telegram,
             display: self.display,
             rate_limit: self.rate_limit,
         }
@@ -70,6 +73,8 @@ pub struct NotificationDestination {
     pub provider: String,
     #[serde(default)]
     pub webhook: Option<Webhook>,
+    #[serde(default)]
+    pub telegram: Option<Telegram>,
     #[serde(default)]
     pub display: DisplaySettings,
     #[serde(default)]
@@ -111,9 +116,7 @@ impl NotificationDestination {
             name
         );
 
-        if self.provider.eq_ignore_ascii_case("discord")
-            || self.provider.eq_ignore_ascii_case("teams")
-        {
+        if provider_uses_webhook(&self.provider) {
             let webhook = self.webhook.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "desired notification destination '{}' webhook is required for provider '{}'",
@@ -125,6 +128,27 @@ impl NotificationDestination {
             anyhow::ensure!(
                 !webhook.env_var.trim().is_empty(),
                 "desired notification destination '{}' webhook.env_var cannot be empty",
+                name
+            );
+        }
+
+        if self.provider.eq_ignore_ascii_case("telegram") {
+            let telegram = self.telegram.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "desired notification destination '{}' telegram is required for provider '{}'",
+                    name,
+                    self.provider
+                )
+            })?;
+
+            anyhow::ensure!(
+                !telegram.bot_token_env_var.trim().is_empty(),
+                "desired notification destination '{}' telegram.bot_token_env_var cannot be empty",
+                name
+            );
+            anyhow::ensure!(
+                !telegram.chat_id_env_var.trim().is_empty(),
+                "desired notification destination '{}' telegram.chat_id_env_var cannot be empty",
                 name
             );
         }
@@ -147,6 +171,12 @@ impl NotificationDestination {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Webhook {
     pub env_var: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Telegram {
+    pub bot_token_env_var: String,
+    pub chat_id_env_var: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -214,6 +244,15 @@ fn default_repeat_interval_minutes() -> u64 {
     30
 }
 
+/// Args: `provider` is the configured notification provider name.
+/// Returns true when the destination sends through a generic webhook URL.
+fn provider_uses_webhook(provider: &str) -> bool {
+    provider.eq_ignore_ascii_case("discord")
+        || provider.eq_ignore_ascii_case("teams")
+        || provider.eq_ignore_ascii_case("email")
+        || provider.eq_ignore_ascii_case("sms")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +301,7 @@ rate_limit:
                     webhook: Some(Webhook {
                         env_var: "DISCORD_WEBHOOK_URL_1".to_string(),
                     }),
+                    telegram: None,
                     display: DisplaySettings::default(),
                     rate_limit: NotificationRateLimit::default(),
                 },
@@ -271,7 +311,10 @@ rate_limit:
                 DesiredNotificationFile {
                     version: "1.0".to_string(),
                     provider: "email".to_string(),
-                    webhook: None,
+                    webhook: Some(Webhook {
+                        env_var: "EMAIL_WEBHOOK_URL".to_string(),
+                    }),
+                    telegram: None,
                     display: DisplaySettings::default(),
                     rate_limit: NotificationRateLimit::default(),
                 },
@@ -303,5 +346,33 @@ webhook:
         assert_eq!(file.display.avatar_url, None);
         assert_eq!(file.rate_limit.max_notifications_per_minute, 5);
         assert_eq!(file.rate_limit.repeat_interval_minutes, 30);
+    }
+
+    /// Args: none.
+    /// Verifies that Telegram notification files validate their provider-specific settings.
+    #[test]
+    fn parses_telegram_notification_file() {
+        let file: DesiredNotificationFile = serde_yaml::from_str(
+            r#"
+version: "1.0"
+provider: "telegram"
+telegram:
+  bot_token_env_var: "TELEGRAM_BOT_TOKEN"
+  chat_id_env_var: "TELEGRAM_CHAT_ID"
+"#,
+        )
+        .unwrap();
+        let state = DesiredNotificationState::from_files(BTreeMap::from([(
+            "telegram".to_string(),
+            file,
+        )]))
+        .unwrap();
+
+        let destination = &state.destinations["telegram"];
+        assert_eq!(destination.provider, "telegram");
+        assert_eq!(
+            destination.telegram.as_ref().unwrap().bot_token_env_var,
+            "TELEGRAM_BOT_TOKEN"
+        );
     }
 }

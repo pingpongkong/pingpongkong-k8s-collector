@@ -20,13 +20,10 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let config = AppConfig::from_env()?;
     let log_level = config.log_level.as_filter();
+    let log_filter = format!("warn,pingpongkong_k8s_collector={log_level}");
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                format!("pingpongkong_k8s_collector={log_level},{log_level}").into()
-            }),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::new(log_filter))
         .init();
 
     tracing::info!(

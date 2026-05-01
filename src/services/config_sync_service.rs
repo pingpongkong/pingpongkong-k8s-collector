@@ -86,6 +86,11 @@ impl ConfigSyncService {
                                 config_map = %self.config.config_map_name,
                                 "ConfigMap publish failed; will retry on next sync"
                             );
+                            self.notify_collector_sync_failed(
+                                &loaded.published.desired_notification_state,
+                                &err.to_string(),
+                            )
+                            .await;
                         }
                     }
                 } else {
@@ -104,6 +109,8 @@ impl ConfigSyncService {
             }
             Err(err) => {
                 warn!(error = %err, "config sync failed");
+                self.notify_config_sync_failed_from_current_state(&err.to_string())
+                    .await;
             }
         }
 
@@ -164,6 +171,45 @@ impl ConfigSyncService {
                     error = %err,
                     destination = %destination_name,
                     "failed to send collector update notification"
+                );
+            }
+        }
+    }
+
+    /// Args: `error` is the failed sync reason.
+    /// Sends a sync failure notification through the last accepted notification state.
+    async fn notify_config_sync_failed_from_current_state(&self, error: &str) {
+        let Some(notification_state) = self.state.current_notification_state() else {
+            debug!("notification state not available; skipping config sync failure notifications");
+            return;
+        };
+
+        self.notify_collector_sync_failed(&notification_state, error)
+            .await;
+    }
+
+    /// Args: `notification_state` contains destinations, `error` is the failed sync reason.
+    /// Sends sync failure notifications to configured destinations.
+    async fn notify_collector_sync_failed(
+        &self,
+        notification_state: &DesiredNotificationState,
+        error: &str,
+    ) {
+        for (destination_name, destination) in &notification_state.destinations {
+            debug!(
+                destination = %destination_name,
+                provider = %destination.provider,
+                "sending collector sync failure notification"
+            );
+            if let Err(err) = self
+                .alerter
+                .send_collector_sync_failed(destination_name, destination, error)
+                .await
+            {
+                warn!(
+                    error = %err,
+                    destination = %destination_name,
+                    "failed to send collector sync failure notification"
                 );
             }
         }

@@ -31,23 +31,32 @@ impl NotificationAlerter {
         name: &str,
         destination: &NotificationDestination,
     ) -> anyhow::Result<bool> {
-        if destination.provider.eq_ignore_ascii_case("discord") {
-            debug!(
-                destination = %name,
-                provider = %destination.provider,
-                "sending collector-updated Discord notification"
-            );
-            self.send_discord_message(destination, "**PingPongKong collector updated**")
-                .await?;
-            return Ok(true);
-        }
+        self.send_text_notification(
+            name,
+            destination,
+            "PingPongKong collector updated",
+            "**PingPongKong collector updated**",
+            "collector update",
+        )
+        .await
+    }
 
-        warn!(
-            destination = %name,
-            provider = %destination.provider,
-            "collector update notification provider is configured but not implemented"
-        );
-        Ok(false)
+    /// Args: `name` identifies the destination, `destination` describes the provider, and `error` explains the failure.
+    /// Sends a collector sync failure notification when the destination provider is supported.
+    pub async fn send_collector_sync_failed(
+        &self,
+        name: &str,
+        destination: &NotificationDestination,
+        error: &str,
+    ) -> anyhow::Result<bool> {
+        self.send_text_notification(
+            name,
+            destination,
+            "PingPongKong collector sync failed",
+            &format!("**PingPongKong collector sync failed**\nerror: `{error}`"),
+            "collector sync failure",
+        )
+        .await
     }
 
     /// Args: `name` identifies the destination, `destination` describes the provider, and `report` is the latest report.
@@ -69,6 +78,41 @@ impl NotificationAlerter {
             return Ok(true);
         }
 
+        if destination.provider.eq_ignore_ascii_case("teams") {
+            debug!(
+                destination = %name,
+                cluster = %report.cluster_name,
+                health = ?report.health_status(),
+                "sending Teams connectivity report"
+            );
+            self.send_teams_message(destination, &report_message(report))
+                .await?;
+            return Ok(true);
+        }
+
+        if destination.provider.eq_ignore_ascii_case("email") {
+            debug!(
+                destination = %name,
+                cluster = %report.cluster_name,
+                health = ?report.health_status(),
+                "sending email connectivity report"
+            );
+            self.send_email_report(destination, report).await?;
+            return Ok(true);
+        }
+
+        if destination.provider.eq_ignore_ascii_case("telegram") {
+            debug!(
+                destination = %name,
+                cluster = %report.cluster_name,
+                health = ?report.health_status(),
+                "sending Telegram connectivity report"
+            );
+            self.send_telegram_message(destination, &report_message(report))
+                .await?;
+            return Ok(true);
+        }
+
         if destination.provider.eq_ignore_ascii_case("sms") {
             debug!(
                 destination = %name,
@@ -84,6 +128,76 @@ impl NotificationAlerter {
             destination = %name,
             provider = %destination.provider,
             "connectivity report notification provider is configured but not implemented"
+        );
+        Ok(false)
+    }
+
+    /// Args: `name` identifies the destination, `destination` describes the provider, `subject` and `content` are the message.
+    /// Sends a concise text notification through providers that accept text messages.
+    async fn send_text_notification(
+        &self,
+        name: &str,
+        destination: &NotificationDestination,
+        subject: &str,
+        content: &str,
+        event: &str,
+    ) -> anyhow::Result<bool> {
+        if destination.provider.eq_ignore_ascii_case("discord") {
+            debug!(
+                destination = %name,
+                provider = %destination.provider,
+                "sending Discord text notification"
+            );
+            self.send_discord_message(destination, content).await?;
+            return Ok(true);
+        }
+
+        if destination.provider.eq_ignore_ascii_case("teams") {
+            debug!(
+                destination = %name,
+                provider = %destination.provider,
+                "sending Teams text notification"
+            );
+            self.send_teams_message(destination, content).await?;
+            return Ok(true);
+        }
+
+        if destination.provider.eq_ignore_ascii_case("email") {
+            debug!(
+                destination = %name,
+                provider = %destination.provider,
+                "sending email text notification"
+            );
+            self.send_email_message(destination, subject, content)
+                .await?;
+            return Ok(true);
+        }
+
+        if destination.provider.eq_ignore_ascii_case("telegram") {
+            debug!(
+                destination = %name,
+                provider = %destination.provider,
+                "sending Telegram text notification"
+            );
+            self.send_telegram_message(destination, content).await?;
+            return Ok(true);
+        }
+
+        if destination.provider.eq_ignore_ascii_case("sms") {
+            debug!(
+                destination = %name,
+                provider = %destination.provider,
+                "sending SMS text notification"
+            );
+            self.send_sms_message(destination, content).await?;
+            return Ok(true);
+        }
+
+        warn!(
+            destination = %name,
+            provider = %destination.provider,
+            event,
+            "notification provider is configured but not implemented"
         );
         Ok(false)
     }
@@ -110,6 +224,87 @@ impl NotificationAlerter {
         debug!("posting Discord webhook message");
         let response = self.client.post(webhook_url).json(&payload).send().await?;
         ensure_success(response, "discord webhook").await
+    }
+
+    /// Args: `destination` is one Teams notification destination and `content` is the message body.
+    /// Sends a simple Teams-compatible webhook message.
+    async fn send_teams_message(
+        &self,
+        destination: &NotificationDestination,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let webhook = destination
+            .webhook
+            .as_ref()
+            .context("teams notification destination requires webhook settings")?;
+        let webhook_url = webhook_url(&webhook.env_var)?;
+        let response = self
+            .client
+            .post(webhook_url)
+            .json(&json!({ "text": content }))
+            .send()
+            .await?;
+        ensure_success(response, "teams webhook").await
+    }
+
+    /// Args: `destination` is one email webhook destination, `subject` and `content` are the email fields.
+    /// Sends a generic email webhook payload.
+    async fn send_email_message(
+        &self,
+        destination: &NotificationDestination,
+        subject: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let webhook = destination
+            .webhook
+            .as_ref()
+            .context("email notification destination requires webhook settings")?;
+        let webhook_url = webhook_url(&webhook.env_var)?;
+        let response = self
+            .client
+            .post(webhook_url)
+            .json(&json!({
+                "subject": subject,
+                "message": content,
+            }))
+            .send()
+            .await?;
+        ensure_success(response, "email webhook").await
+    }
+
+    /// Args: `destination` is one Telegram notification destination and `content` is the message body.
+    /// Sends a Telegram Bot API sendMessage request.
+    async fn send_telegram_message(
+        &self,
+        destination: &NotificationDestination,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let telegram = destination
+            .telegram
+            .as_ref()
+            .context("telegram notification destination requires telegram settings")?;
+        let token = std::env::var(&telegram.bot_token_env_var).with_context(|| {
+            format!(
+                "{} must contain the Telegram bot token",
+                telegram.bot_token_env_var
+            )
+        })?;
+        let chat_id = std::env::var(&telegram.chat_id_env_var).with_context(|| {
+            format!(
+                "{} must contain the Telegram chat id",
+                telegram.chat_id_env_var
+            )
+        })?;
+        let response = self
+            .client
+            .post(format!("https://api.telegram.org/bot{token}/sendMessage"))
+            .json(&json!({
+                "chat_id": chat_id,
+                "text": content,
+            }))
+            .send()
+            .await?;
+        ensure_success(response, "telegram api").await
     }
 
     /// Args: `destination` is one Discord notification destination and `report` is the latest connectivity report.
@@ -155,6 +350,31 @@ impl NotificationAlerter {
         ensure_success(response, "discord webhook").await
     }
 
+    /// Args: `destination` is one email webhook destination and `report` is the latest connectivity report.
+    /// Sends a generic email webhook payload with the report embedded as JSON.
+    async fn send_email_report(
+        &self,
+        destination: &NotificationDestination,
+        report: &ConnectivityReport,
+    ) -> anyhow::Result<()> {
+        let webhook = destination
+            .webhook
+            .as_ref()
+            .context("email notification destination requires webhook settings")?;
+        let webhook_url = webhook_url(&webhook.env_var)?;
+        let response = self
+            .client
+            .post(webhook_url)
+            .json(&json!({
+                "subject": format!("PingPongKong {} {}", report.cluster_name, health_label(&report.health_status())),
+                "message": report_message(report),
+                "report": report,
+            }))
+            .send()
+            .await?;
+        ensure_success(response, "email webhook").await
+    }
+
     /// Args: `destination` is an SMS-like webhook destination and `report` is the latest connectivity report.
     /// Sends a concise cluster health message plus report URL.
     async fn send_sms_report(
@@ -187,6 +407,27 @@ impl NotificationAlerter {
         );
         ensure_success(response, "sms webhook").await
     }
+
+    /// Args: `destination` is an SMS-like webhook destination and `message` is the text body.
+    /// Sends a concise text message through a generic SMS webhook payload.
+    async fn send_sms_message(
+        &self,
+        destination: &NotificationDestination,
+        message: &str,
+    ) -> anyhow::Result<()> {
+        let webhook = destination
+            .webhook
+            .as_ref()
+            .context("sms notification destination requires webhook settings")?;
+        let webhook_url = webhook_url(&webhook.env_var)?;
+        let response = self
+            .client
+            .post(webhook_url)
+            .json(&json!({ "message": message }))
+            .send()
+            .await?;
+        ensure_success(response, "sms webhook").await
+    }
 }
 
 /// Args: `value` is either a webhook URL or the name of an environment variable containing one.
@@ -196,7 +437,7 @@ fn webhook_url(value: &str) -> anyhow::Result<String> {
         return Ok(value.to_string());
     }
 
-    std::env::var(value).with_context(|| format!("{value} must contain the Discord webhook URL"))
+    std::env::var(value).with_context(|| format!("{value} must contain the webhook URL"))
 }
 
 #[derive(Debug, Default)]
@@ -263,6 +504,16 @@ fn health_label(health: &NodeHealthStatus) -> &'static str {
         NodeHealthStatus::Unreachable => "Unreachable",
         NodeHealthStatus::Degraded => "Degraded",
     }
+}
+
+/// Args: `report` is the latest connectivity report.
+/// Returns a compact human-readable report summary.
+fn report_message(report: &ConnectivityReport) -> String {
+    format!(
+        "PingPongKong report\ncluster: {}\nhealth: {}",
+        report.cluster_name,
+        health_label(&report.health_status())
+    )
 }
 
 /// Args: `response` is a provider response and `provider` labels the error.
