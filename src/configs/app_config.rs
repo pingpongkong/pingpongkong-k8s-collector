@@ -6,11 +6,9 @@ pub struct AppConfig {
     pub source: SourceConfig,
     pub namespace: String,
     pub config_map_name: String,
-    pub sync_interval: Duration,
-    pub scrape_interval: Duration,
-    pub agent_selector: String,
-    pub agent_results_path: String,
-    pub agent_port: u16,
+    pub collector_update_interval: Duration,
+    pub agent_check_interval: Duration,
+    pub agent_api_port: u16,
     pub max_concurrent_agent_scrapes: usize,
     pub http_addr: SocketAddr,
     pub dry_run: bool,
@@ -24,14 +22,9 @@ impl AppConfig {
             source: SourceConfig::from_env()?,
             namespace: env_or("K8S_NAMESPACE", "default"),
             config_map_name: env_or("CONFIG_MAP_NAME", "pingpongkong-current-matrix"),
-            sync_interval: duration_from_env("SYNC_INTERVAL_SECONDS", 60)?,
-            scrape_interval: duration_from_env("SCRAPE_INTERVAL_SECONDS", 15)?,
-            agent_selector: env_or(
-                "AGENT_LABEL_SELECTOR",
-                "app.kubernetes.io/name=pingpongkong-agent",
-            ),
-            agent_results_path: env_or("AGENT_RESULTS_PATH", "/results"),
-            agent_port: parse_env("AGENT_PORT", 8080)?,
+            collector_update_interval: human_duration_from_env("COLLECTOR_UPDATE_INTERVAL", "5m")?,
+            agent_check_interval: human_duration_from_env("AGENT_CHECK_INTERVAL", "5m")?,
+            agent_api_port: parse_env("AGENT_API_PORT", 8080)?,
             max_concurrent_agent_scrapes: parse_bounded_usize(
                 "MAX_CONCURRENT_AGENT_SCRAPES",
                 64,
@@ -49,9 +42,9 @@ impl AppConfig {
 #[derive(Debug, Clone)]
 pub struct SourceConfig {
     pub git_url: String,
-    pub matrix_path: String,
-    pub discord_path: String,
+    pub cluster_name: String,
     pub token: Option<String>,
+    pub checkout_dir: String,
 }
 
 impl SourceConfig {
@@ -64,9 +57,12 @@ impl SourceConfig {
 
         Ok(Self {
             git_url,
-            matrix_path: format!("k8s/{cluster_name}.yaml"),
-            discord_path: "notification/discord.yaml".to_string(),
+            cluster_name,
             token: env::var("CONFIG_GIT_TOKEN").ok(),
+            checkout_dir: env_or(
+                "CONFIG_GIT_CHECKOUT_DIR",
+                "/tmp/pingpongkong-k8s-collector-config",
+            ),
         })
     }
 }
@@ -77,10 +73,34 @@ fn env_or(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-/// Args: `name` is the environment variable, `default_seconds` is used when it is unset.
-/// Parses a seconds value into a `Duration`.
-fn duration_from_env(name: &str, default_seconds: u64) -> anyhow::Result<Duration> {
-    Ok(Duration::from_secs(parse_env(name, default_seconds)?))
+/// Args: `name` is the env var, `default` is used when unset.
+/// Parses human duration values such as 30s, 5m, or 1h.
+fn human_duration_from_env(name: &str, default: &str) -> anyhow::Result<Duration> {
+    let raw = env_or(name, default);
+    parse_human_duration(&raw)
+        .with_context(|| format!("{name} must be a duration like 30s, 5m, or 1h"))
+}
+
+/// Args: `raw` is a duration string with an s, m, or h suffix.
+/// Returns the parsed duration.
+fn parse_human_duration(raw: &str) -> anyhow::Result<Duration> {
+    let trimmed = raw.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "duration cannot be empty");
+
+    let (number, unit) = trimmed.split_at(trimmed.len().saturating_sub(1));
+    let value: u64 = number
+        .parse()
+        .with_context(|| format!("invalid duration value '{}'", raw))?;
+
+    let seconds = match unit {
+        "s" | "S" => value,
+        "m" | "M" => value * 60,
+        "h" | "H" => value * 60 * 60,
+        _ => anyhow::bail!("duration '{}' must end with s, m, or h", raw),
+    };
+
+    anyhow::ensure!(seconds > 0, "duration must be greater than zero");
+    Ok(Duration::from_secs(seconds))
 }
 
 /// Args: `name` is the environment variable, `default` is used when it is unset.
