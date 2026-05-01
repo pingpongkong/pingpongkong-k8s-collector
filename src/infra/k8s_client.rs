@@ -4,10 +4,10 @@ use anyhow::Context;
 use k8s_openapi::api::core::v1::{ConfigMap, Node};
 use kube::{
     Api, Client,
-    api::{ObjectMeta, Patch, PatchParams},
+    api::{DeleteParams, ObjectMeta, Patch, PatchParams},
 };
 use std::collections::BTreeMap;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Clone)]
 pub struct K8sClient {
@@ -64,8 +64,19 @@ impl K8sClient {
         };
 
         if let Some(normalized) = data.get("normalized.json") {
-            let published: crate::models::PublishedConfig = serde_json::from_str(normalized)
-                .context("failed to parse ConfigMap normalized.json")?;
+            let published: crate::models::PublishedConfig = match serde_json::from_str(normalized) {
+                Ok(published) => published,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        config_map = %name,
+                        "failed to parse previous ConfigMap normalized.json"
+                    );
+                    self.delete_malformed_configmap(name, "invalid normalized.json")
+                        .await;
+                    return Ok(None);
+                }
+            };
             debug!(
                 config_map = %name,
                 cluster = %published.desired_ping_state.cluster,
@@ -75,8 +86,19 @@ impl K8sClient {
         }
 
         if let Some(yaml) = data.get("desiredPingState.yaml") {
-            let state: DesiredPingState = serde_yaml::from_str(yaml)
-                .context("failed to parse ConfigMap desiredPingState.yaml")?;
+            let state: DesiredPingState = match serde_yaml::from_str(yaml) {
+                Ok(state) => state,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        config_map = %name,
+                        "failed to parse previous ConfigMap desiredPingState.yaml"
+                    );
+                    self.delete_malformed_configmap(name, "invalid desiredPingState.yaml")
+                        .await;
+                    return Ok(None);
+                }
+            };
             debug!(
                 config_map = %name,
                 cluster = %state.cluster,
@@ -87,6 +109,28 @@ impl K8sClient {
 
         debug!(config_map = %name, "collector ConfigMap does not contain desired state keys");
         Ok(None)
+    }
+
+    /// Args: `name` is the ConfigMap name, `reason` explains why it cannot be reused.
+    /// Deletes a malformed previous ConfigMap before the next publish recreates it from Git.
+    async fn delete_malformed_configmap(&self, name: &str, reason: &str) {
+        match self
+            .config_maps
+            .delete(name, &DeleteParams::default())
+            .await
+        {
+            Ok(_) => warn!(
+                config_map = %name,
+                reason,
+                "deleted malformed previous ConfigMap; will recreate from Git"
+            ),
+            Err(err) => warn!(
+                error = %err,
+                config_map = %name,
+                reason,
+                "failed to delete malformed previous ConfigMap; will still republish from Git"
+            ),
+        }
     }
 
     /// Args: `name` is the target ConfigMap name, `loaded` is the validated state config bundle.
@@ -121,7 +165,7 @@ impl K8sClient {
         ]);
         for (notification_name, yaml) in &loaded.notification_yamls {
             data.insert(
-                format!("notification/{notification_name}.yaml"),
+                format!("notification-{notification_name}.yaml"),
                 yaml.clone(),
             );
         }

@@ -17,14 +17,14 @@ The collector runs as a Kubernetes Deployment.
 On each sync cycle it reads:
 
 ```text
-k8s/<K8S_CLUSTERNAME>.yaml
+k8s/<CONFIG_GIT_CLUSTERNAME>.yaml
 notification/discord.yaml
 ```
 
 If the files changed, it writes this ConfigMap, by default:
 
 ```text
-pingpongkong-<K8S_CLUSTERNAME>-ping-state
+pingpongkong-<CONFIG_GIT_CLUSTERNAME>-ping-state
 ```
 
 Agents watch that ConfigMap and reload when it changes.
@@ -38,14 +38,14 @@ The collector also finds running agent pods, calls their JSON results endpoint, 
 
 ```text
 CONFIG_GIT_URL
-K8S_CLUSTERNAME
+CONFIG_GIT_CLUSTERNAME
 ```
 
 Example:
 
 ```bash
-CONFIG_GIT_URL=https://gitlab.company.com/group/pingpongkong-state \
-K8S_CLUSTERNAME=h100-cluster \
+CONFIG_GIT_URL=https://github.com/songk1992/pingpongkong-state.git \
+CONFIG_GIT_CLUSTERNAME=h100-cluster \
 cargo run
 ```
 
@@ -56,7 +56,8 @@ CONFIG_GIT_TOKEN
 ```
 
 The collector derives raw file URLs from the repository URL and uses the repository default branch via `HEAD`.
-GitHub repositories use bearer token auth; GitLab-compatible repositories use the `PRIVATE-TOKEN` header.
+GitHub repositories use `x-access-token` as the HTTPS Git username; GitLab-compatible repositories
+use `oauth2`.
 
 ## Useful Options
 
@@ -73,13 +74,13 @@ DRY_RUN=false
 
 `K8S_NAMESPACE` should be set to the namespace where the collector and app live, usually from the pod
 downward API field `metadata.namespace`. The ConfigMap name is always generated as
-`pingpongkong-{K8S_CLUSTERNAME}-ping-state`.
+`pingpongkong-{CONFIG_GIT_CLUSTERNAME}-ping-state`.
 
 ## Local Dry Run
 
 ```bash
-CONFIG_GIT_URL=https://gitlab.company.com/group/pingpongkong-state \
-K8S_CLUSTERNAME=h100-cluster \
+CONFIG_GIT_URL=https://github.com/songk1992/pingpongkong-state.git \
+CONFIG_GIT_CLUSTERNAME=h100-cluster \
 DRY_RUN=true \
 cargo run
 ```

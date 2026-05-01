@@ -78,7 +78,8 @@ impl SourceConfig {
     /// Reads source-related environment variables for the Git-backed config files.
     fn from_env() -> anyhow::Result<Self> {
         let git_url = env::var("CONFIG_GIT_URL").context("CONFIG_GIT_URL must be set")?;
-        let cluster_name = env::var("K8S_CLUSTERNAME").context("K8S_CLUSTERNAME must be set")?;
+        let cluster_name =
+            env::var("CONFIG_GIT_CLUSTERNAME").context("CONFIG_GIT_CLUSTERNAME must be set")?;
 
         Ok(Self {
             git_url,

@@ -257,7 +257,7 @@ async fn run_git(command: &mut Command) -> anyhow::Result<()> {
 /// Args: `git_url` is the repository URL and `token` is the optional access token.
 /// Embeds a token in HTTPS clone URLs so Git can authenticate private repositories.
 fn authenticated_git_url(git_url: &str, token: Option<&str>) -> anyhow::Result<String> {
-    let Some(token) = token else {
+    let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
         return Ok(git_url.to_string());
     };
     let mut url = Url::parse(git_url).context("CONFIG_GIT_URL must be a valid URL")?;
@@ -265,11 +265,22 @@ fn authenticated_git_url(git_url: &str, token: Option<&str>) -> anyhow::Result<S
         return Ok(git_url.to_string());
     }
 
-    url.set_username("oauth2")
+    let username = if url.host_str().is_some_and(is_github_host) {
+        "x-access-token"
+    } else {
+        "oauth2"
+    };
+    url.set_username(username)
         .map_err(|_| anyhow::anyhow!("failed to set Git username"))?;
     url.set_password(Some(token))
         .map_err(|_| anyhow::anyhow!("failed to set Git token"))?;
     Ok(url.to_string())
+}
+
+/// Args: `host` is the parsed Git remote host.
+/// Returns true when GitHub's token username convention should be used.
+fn is_github_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("github.com") || host.to_ascii_lowercase().ends_with(".github.com")
 }
 
 /// Args: `path` is a candidate notification file path.
@@ -312,5 +323,46 @@ fn append_hash_bytes(hash: &mut u64, bytes: &[u8]) {
     for byte in bytes {
         *hash ^= u64::from(*byte);
         *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::authenticated_git_url;
+
+    #[test]
+    fn authenticated_git_url_uses_github_token_username() {
+        let url = authenticated_git_url(
+            "https://github.com/songk1992/pingpongkong-state.git",
+            Some(" token-value "),
+        )
+        .expect("url should be valid");
+
+        assert_eq!(
+            url,
+            "https://x-access-token:token-value@github.com/songk1992/pingpongkong-state.git"
+        );
+    }
+
+    #[test]
+    fn authenticated_git_url_uses_oauth2_for_non_github_https() {
+        let url = authenticated_git_url(
+            "https://gitlab.company.com/group/pingpongkong-state.git",
+            Some("token-value"),
+        )
+        .expect("url should be valid");
+
+        assert_eq!(
+            url,
+            "https://oauth2:token-value@gitlab.company.com/group/pingpongkong-state.git"
+        );
+    }
+
+    #[test]
+    fn authenticated_git_url_ignores_empty_tokens() {
+        let git_url = "https://github.com/songk1992/pingpongkong-state.git";
+        let url = authenticated_git_url(git_url, Some("  ")).expect("url should be valid");
+
+        assert_eq!(url, git_url);
     }
 }
