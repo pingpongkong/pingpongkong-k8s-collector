@@ -19,8 +19,9 @@ RUN apt-get update \
 COPY --from=builder /app/target/release/pingpongkong-k8s-collector /usr/local/bin/pingpongkong-k8s-collector
 
 ENV RUST_BACKTRACE=1
+ENV COLLECTOR_API_PORT=8081
 
 USER collector
-EXPOSE 8080
+EXPOSE 8081
 
 ENTRYPOINT ["/usr/local/bin/pingpongkong-k8s-collector"]

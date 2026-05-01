@@ -20,11 +20,13 @@ impl AppConfig {
     /// Args: none.
     /// Reads process environment and returns the complete collector runtime configuration.
     pub fn from_env() -> anyhow::Result<Self> {
+        let source = SourceConfig::from_env()?;
+
         Ok(Self {
             log_level: log_level_from_env()?,
-            source: SourceConfig::from_env()?,
-            namespace: env_or("K8S_NAMESPACE", "default"),
-            config_map_name: env_or("CONFIG_MAP_NAME", "pingpongkong-current-matrix"),
+            namespace: namespace_from_env(),
+            config_map_name: config_map_name(&source.cluster_name),
+            source,
             collector_update_interval: human_duration_from_env("COLLECTOR_UPDATE_INTERVAL", "5m")?,
             agent_check_interval: human_duration_from_env("AGENT_CHECK_INTERVAL", "5m")?,
             agent_api_port: parse_env("AGENT_API_PORT", 8080)?,
@@ -34,9 +36,7 @@ impl AppConfig {
                 1,
                 4096,
             )?,
-            http_addr: env_or("HTTP_ADDR", "0.0.0.0:8080")
-                .parse()
-                .context("HTTP_ADDR must be a socket address, for example 0.0.0.0:8080")?,
+            http_addr: collector_http_addr_from_env()?,
             dry_run: bool_from_env("DRY_RUN", false)?,
         })
     }
@@ -78,8 +78,7 @@ impl SourceConfig {
     /// Reads source-related environment variables for the Git-backed config files.
     fn from_env() -> anyhow::Result<Self> {
         let git_url = env::var("CONFIG_GIT_URL").context("CONFIG_GIT_URL must be set")?;
-        let cluster_name =
-            env::var("CONFIG_GIT_CLUSTERNAME").context("CONFIG_GIT_CLUSTERNAME must be set")?;
+        let cluster_name = env::var("K8S_CLUSTERNAME").context("K8S_CLUSTERNAME must be set")?;
 
         Ok(Self {
             git_url,
@@ -97,6 +96,31 @@ impl SourceConfig {
 /// Returns the environment value or the provided default string.
 fn env_or(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// Args: none.
+/// Reads the namespace where the collector and its ConfigMap live.
+fn namespace_from_env() -> String {
+    env::var("K8S_NAMESPACE").unwrap_or_else(|_| "default".to_string())
+}
+
+/// Args: `cluster_name` is the configured cluster identifier.
+/// Returns the target ConfigMap name for the cluster ping state.
+fn config_map_name(cluster_name: &str) -> String {
+    format!("pingpongkong-{cluster_name}-ping-state")
+}
+
+/// Args: none.
+/// Builds the collector HTTP listen address from HTTP_ADDR or COLLECTOR_API_PORT.
+fn collector_http_addr_from_env() -> anyhow::Result<SocketAddr> {
+    if let Ok(value) = env::var("HTTP_ADDR") {
+        return value
+            .parse()
+            .context("HTTP_ADDR must be a socket address, for example 0.0.0.0:8081");
+    }
+
+    let port = parse_env("COLLECTOR_API_PORT", 8081)?;
+    Ok(SocketAddr::from(([0, 0, 0, 0], port)))
 }
 
 /// Args: none.
