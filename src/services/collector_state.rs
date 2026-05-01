@@ -4,6 +4,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use std::sync::{Arc, RwLock};
+use tracing::debug;
 
 #[derive(Clone, Default)]
 pub struct AppState {
@@ -17,6 +18,12 @@ impl AppState {
     /// Args: `published` is the accepted config, `config_hash` is its stable fingerprint.
     /// Stores the active config and marks the sync as successful.
     pub fn accept_config(&self, published: PublishedConfig, config_hash: String) {
+        debug!(
+            cluster = %published.desired_ping_state.cluster,
+            revision = %published.revision,
+            config_hash = %config_hash,
+            "accepting config into global state"
+        );
         {
             let mut current = self.current_config.write().expect(STATE_POISONED);
             *current = Some(published);
@@ -57,6 +64,12 @@ impl AppState {
     /// Args: `report` is the latest observed connectivity report.
     /// Stores the report for controller responses.
     pub fn update_report(&self, report: ConnectivityReport) {
+        debug!(
+            cluster = %report.cluster_name,
+            nodes = report.node_statuses.len(),
+            health = ?report.health_status(),
+            "updating report in global state"
+        );
         let mut current = self.report.write().expect(STATE_POISONED);
         *current = Some(report);
     }

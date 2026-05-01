@@ -7,13 +7,14 @@ use reqwest::{Client, Url};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tracing::{debug, warn};
 
 #[derive(Clone)]
-pub struct AgentScraper {
+pub struct AgentClient {
     client: Client,
 }
 
-impl AgentScraper {
+impl AgentClient {
     /// Args: none.
     /// Builds an HTTP client with a short timeout for checking node-local agents.
     pub fn new() -> anyhow::Result<Self> {
@@ -21,7 +22,7 @@ impl AgentScraper {
             client: Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
-                .context("failed to build agent scraper HTTP client")?,
+                .context("failed to build agent HTTP client")?,
         })
     }
 
@@ -34,9 +35,14 @@ impl AgentScraper {
         max_concurrent: usize,
     ) -> Vec<NodeStatus> {
         if nodes.is_empty() {
+            debug!("no Kubernetes nodes found for agent checks");
             return Vec::new();
         }
 
+        debug!(
+            nodes = nodes.len(),
+            port, max_concurrent, "starting agent checks"
+        );
         let mut tasks = JoinSet::new();
         let permits = Arc::new(Semaphore::new(max_concurrent.max(1)));
 
@@ -59,12 +65,28 @@ impl AgentScraper {
         let mut results = Vec::with_capacity(tasks.len());
         while let Some(result) = tasks.join_next().await {
             match result {
-                Ok(Ok(status)) => results.push(status),
-                Ok(Err(status)) => results.push(status),
-                Err(err) => tracing::warn!(error = %err, "agent check task failed"),
+                Ok(Ok(status)) => {
+                    debug!(
+                        node = %status.node_name,
+                        health = ?status.health_status,
+                        targets = status.targets.len(),
+                        "agent check succeeded"
+                    );
+                    results.push(status);
+                }
+                Ok(Err(status)) => {
+                    warn!(
+                        node = %status.node_name,
+                        ip = %status.ip_address,
+                        "agent check failed; marking node unreachable"
+                    );
+                    results.push(status);
+                }
+                Err(err) => warn!(error = %err, "agent check task failed"),
             }
         }
 
+        debug!(statuses = results.len(), "agent checks completed");
         results
     }
 }
@@ -87,6 +109,12 @@ async fn get_node_status(
             ));
         }
     };
+    debug!(
+        node = %node.name,
+        ip = %node.ip_address,
+        url = %url,
+        "requesting node status from agent"
+    );
 
     let response = match client.get(url.clone()).send().await {
         Ok(response) => response,

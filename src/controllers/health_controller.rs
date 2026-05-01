@@ -4,6 +4,7 @@ use axum::{Json, Router, http::StatusCode, routing::get};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tracing::debug;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -38,6 +39,12 @@ async fn healthz(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Json<HealthResponse> {
     let snapshot = state.health_snapshot();
+    debug!(
+        ok = snapshot.ok,
+        revision = ?snapshot.revision,
+        config_hash = ?snapshot.config_hash,
+        "health snapshot requested"
+    );
 
     Json(HealthResponse {
         ok: snapshot.ok,
@@ -50,6 +57,7 @@ async fn healthz(
 /// Args: none.
 /// Returns a plain OK body for simple load balancer health checks.
 async fn health() -> &'static str {
+    debug!("plain health check requested");
     "OK"
 }
 
@@ -59,7 +67,15 @@ async fn report(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> (StatusCode, Json<Value>) {
     match state.current_report() {
-        Some(report) => (StatusCode::OK, Json(json!(report))),
+        Some(report) => {
+            debug!(
+                cluster = %report.cluster_name,
+                environment = %report.environment,
+                nodes = report.node_statuses.len(),
+                "connectivity report requested"
+            );
+            (StatusCode::OK, Json(json!(report)))
+        }
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "report is not available yet" })),

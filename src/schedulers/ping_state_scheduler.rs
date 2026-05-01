@@ -1,10 +1,10 @@
 use crate::{
     configs::AppConfig,
     infra::K8sClient,
-    services::{AppState, ScrapeAlertService},
+    services::{AppState, PingStateService},
 };
 use tokio::time;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Args: `config` is runtime config, `state` stores global collector state, `k8s` discovers nodes.
 /// Periodically gets node agent data and updates the connectivity report.
@@ -18,12 +18,17 @@ pub async fn get_ping_state_loop(
         return futures_pending().await;
     };
 
+    debug!(
+        interval_secs = config.agent_check_interval.as_secs(),
+        "starting agent check scheduler"
+    );
     let mut interval = time::interval(config.agent_check_interval);
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    let mut service = ScrapeAlertService::new(config, state, k8s)?;
+    let mut service = PingStateService::new(config, state, k8s)?;
 
     loop {
         interval.tick().await;
+        debug!("agent check scheduler tick");
         service.get_ping_state().await?;
     }
 }

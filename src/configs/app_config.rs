@@ -1,15 +1,17 @@
 use anyhow::Context;
+use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    pub log_level: LogLevel,
     pub source: SourceConfig,
     pub namespace: String,
     pub config_map_name: String,
     pub collector_update_interval: Duration,
     pub agent_check_interval: Duration,
     pub agent_api_port: u16,
-    pub max_concurrent_agent_scrapes: usize,
+    pub max_concurrent_agent_checks: usize,
     pub http_addr: SocketAddr,
     pub dry_run: bool,
 }
@@ -19,14 +21,15 @@ impl AppConfig {
     /// Reads process environment and returns the complete collector runtime configuration.
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
+            log_level: log_level_from_env()?,
             source: SourceConfig::from_env()?,
             namespace: env_or("K8S_NAMESPACE", "default"),
             config_map_name: env_or("CONFIG_MAP_NAME", "pingpongkong-current-matrix"),
             collector_update_interval: human_duration_from_env("COLLECTOR_UPDATE_INTERVAL", "5m")?,
             agent_check_interval: human_duration_from_env("AGENT_CHECK_INTERVAL", "5m")?,
             agent_api_port: parse_env("AGENT_API_PORT", 8080)?,
-            max_concurrent_agent_scrapes: parse_bounded_usize(
-                "MAX_CONCURRENT_AGENT_SCRAPES",
+            max_concurrent_agent_checks: parse_bounded_usize(
+                "MAX_CONCURRENT_AGENT_CHECKS",
                 64,
                 1,
                 4096,
@@ -36,6 +39,29 @@ impl AppConfig {
                 .context("HTTP_ADDR must be a socket address, for example 0.0.0.0:8080")?,
             dry_run: bool_from_env("DRY_RUN", false)?,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    /// Args: none.
+    /// Returns the lowercase tracing filter value for this log level.
+    pub fn as_filter(self) -> &'static str {
+        match self {
+            Self::Trace => "trace",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
     }
 }
 
@@ -71,6 +97,22 @@ impl SourceConfig {
 /// Returns the environment value or the provided default string.
 fn env_or(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// Args: none.
+/// Parses LOG_LEVEL from TRACE, DEBUG, INFO, WARN, or ERROR.
+fn log_level_from_env() -> anyhow::Result<LogLevel> {
+    match env_or("LOG_LEVEL", "INFO").to_ascii_uppercase().as_str() {
+        "TRACE" => Ok(LogLevel::Trace),
+        "DEBUG" => Ok(LogLevel::Debug),
+        "INFO" => Ok(LogLevel::Info),
+        "WARN" => Ok(LogLevel::Warn),
+        "ERROR" => Ok(LogLevel::Error),
+        value => anyhow::bail!(
+            "LOG_LEVEL='{}' is invalid; expected TRACE, DEBUG, INFO, WARN, or ERROR",
+            value
+        ),
+    }
 }
 
 /// Args: `name` is the env var, `default` is used when unset.

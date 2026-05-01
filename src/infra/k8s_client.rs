@@ -7,6 +7,7 @@ use kube::{
     api::{ObjectMeta, Patch, PatchParams},
 };
 use std::collections::BTreeMap;
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct K8sClient {
@@ -26,6 +27,7 @@ impl K8sClient {
     /// Args: `namespace` is the Kubernetes namespace where collector resources live.
     /// Creates typed Kubernetes API clients for ConfigMaps and agent Pods.
     pub async fn new(namespace: String) -> anyhow::Result<Self> {
+        debug!(namespace = %namespace, "creating Kubernetes client");
         let client = Client::try_default()
             .await
             .context("failed to create Kubernetes client")?;
@@ -40,6 +42,11 @@ impl K8sClient {
     /// Args: `name` is the ConfigMap name.
     /// Returns the previous desired ping state when the ConfigMap exists and contains normalized config.
     pub async fn get_configmap(&self, name: &str) -> anyhow::Result<Option<DesiredPingState>> {
+        debug!(
+            namespace = %self.namespace,
+            config_map = %name,
+            "reading previous collector ConfigMap"
+        );
         let config_map = match self.config_maps.get_opt(name).await {
             Ok(config_map) => config_map,
             Err(err) => {
@@ -48,24 +55,37 @@ impl K8sClient {
         };
 
         let Some(config_map) = config_map else {
+            debug!(config_map = %name, "collector ConfigMap does not exist yet");
             return Ok(None);
         };
         let Some(data) = config_map.data else {
+            debug!(config_map = %name, "collector ConfigMap has no data");
             return Ok(None);
         };
 
         if let Some(normalized) = data.get("normalized.json") {
             let published: crate::models::PublishedConfig = serde_json::from_str(normalized)
                 .context("failed to parse ConfigMap normalized.json")?;
+            debug!(
+                config_map = %name,
+                cluster = %published.desired_ping_state.cluster,
+                "loaded previous state from normalized ConfigMap data"
+            );
             return Ok(Some(published.desired_ping_state));
         }
 
         if let Some(yaml) = data.get("desiredPingState.yaml") {
             let state: DesiredPingState = serde_yaml::from_str(yaml)
                 .context("failed to parse ConfigMap desiredPingState.yaml")?;
+            debug!(
+                config_map = %name,
+                cluster = %state.cluster,
+                "loaded previous state from ConfigMap yaml data"
+            );
             return Ok(Some(state));
         }
 
+        debug!(config_map = %name, "collector ConfigMap does not contain desired state keys");
         Ok(None)
     }
 
@@ -74,6 +94,14 @@ impl K8sClient {
     pub async fn update_configmap(&self, name: &str, loaded: &LoadedConfig) -> anyhow::Result<()> {
         let normalized =
             serde_json::to_string_pretty(&loaded.published).context("serialize config")?;
+        debug!(
+            namespace = %self.namespace,
+            config_map = %name,
+            revision = %loaded.published.revision,
+            config_hash = %loaded.published.config_hash,
+            notification_files = loaded.notification_yamls.len(),
+            "updating collector ConfigMap"
+        );
 
         let mut data = BTreeMap::from([
             (
@@ -127,19 +155,21 @@ impl K8sClient {
             .await
             .with_context(|| format!("failed to apply ConfigMap '{}'", name))?;
 
+        debug!(config_map = %name, "collector ConfigMap update applied");
         Ok(())
     }
 
     /// Args: none.
     /// Lists Kubernetes nodes with name, labels, and the best available IP address.
     pub async fn list_nodes(&self) -> anyhow::Result<Vec<K8sNode>> {
+        debug!("listing Kubernetes nodes");
         let nodes = self
             .nodes
             .list(&Default::default())
             .await
             .context("failed to list Kubernetes nodes")?;
 
-        let k8s_nodes = nodes
+        let k8s_nodes: Vec<K8sNode> = nodes
             .items
             .into_iter()
             .filter_map(|node| {
@@ -154,6 +184,7 @@ impl K8sClient {
             })
             .collect();
 
+        debug!(nodes = k8s_nodes.len(), "Kubernetes nodes listed");
         Ok(k8s_nodes)
     }
 }

@@ -4,7 +4,7 @@ use crate::{
     models::{DesiredNotificationState, DesiredPingState},
     services::{AppState, NotificationAlerter},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub struct ConfigSyncService {
     config: AppConfig,
@@ -35,7 +35,12 @@ impl ConfigSyncService {
     /// Args: none.
     /// Runs one collector state update cycle from Kubernetes state, Git state, and global state.
     pub async fn update_collector_state(&self) -> anyhow::Result<()> {
+        debug!("collector state update cycle started");
         let prev_cluster_ping_state = self.get_k8s_configmap().await?;
+        debug!(
+            has_previous_cluster_state = prev_cluster_ping_state.is_some(),
+            "previous cluster state read"
+        );
 
         match self.source.load().await {
             Ok(loaded) => {
@@ -46,6 +51,13 @@ impl ConfigSyncService {
                 let cluster_state_changed = self.is_updated_cluster_state(
                     prev_cluster_ping_state.as_ref(),
                     &cluster_ping_state,
+                );
+                debug!(
+                    config_changed,
+                    cluster_state_changed,
+                    cluster = %cluster_ping_state.cluster,
+                    config_hash = %next_hash,
+                    "collector state comparison completed"
                 );
                 let mut accepted = false;
 
@@ -82,10 +94,12 @@ impl ConfigSyncService {
 
                 if accepted {
                     if cluster_state_changed {
+                        debug!("cluster state changed; sending collector update notifications");
                         self.notify_collector_updated(&loaded.published.desired_notification_state)
                             .await;
                     }
                     self.state.accept_config(loaded.published, next_hash);
+                    debug!("global collector state updated");
                 }
             }
             Err(err) => {
@@ -100,6 +114,7 @@ impl ConfigSyncService {
     /// Reads the current desired ping state from the Kubernetes ConfigMap when it exists.
     async fn get_k8s_configmap(&self) -> anyhow::Result<Option<DesiredPingState>> {
         let Some(k8s) = &self.k8s else {
+            debug!("dry-run enabled; skipping previous ConfigMap read");
             return Ok(None);
         };
 
@@ -123,6 +138,7 @@ impl ConfigSyncService {
         loaded: &crate::infra::config_source::LoadedConfig,
     ) -> anyhow::Result<()> {
         let Some(k8s) = &self.k8s else {
+            debug!("dry-run enabled; skipping ConfigMap update");
             return Ok(());
         };
 
@@ -134,6 +150,11 @@ impl ConfigSyncService {
     /// Sends an update notification to configured destinations when notification state exists.
     async fn notify_collector_updated(&self, notification_state: &DesiredNotificationState) {
         for (destination_name, destination) in &notification_state.destinations {
+            debug!(
+                destination = %destination_name,
+                provider = %destination.provider,
+                "sending collector update notification"
+            );
             if let Err(err) = self
                 .alerter
                 .send_collector_updated(destination_name, destination)

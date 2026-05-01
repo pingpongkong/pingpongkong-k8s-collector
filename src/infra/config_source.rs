@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::{fs, process::Command};
+use tracing::{debug, info};
 
 #[derive(Clone)]
 pub struct ConfigSource {
@@ -34,6 +35,11 @@ impl ConfigSource {
     /// Args: none.
     /// Updates the local Git checkout and returns the validated runtime config bundle.
     pub async fn load(&self) -> anyhow::Result<LoadedConfig> {
+        debug!(
+            cluster = %self.config.cluster_name,
+            checkout_dir = %self.config.checkout_dir,
+            "loading config source"
+        );
         self.retrieve_git_data().await?;
 
         let checkout = PathBuf::from(&self.config.checkout_dir);
@@ -45,6 +51,12 @@ impl ConfigSource {
         let synced_at = Utc::now();
         let config_hash = config_hash(&desired_ping_state_yaml, &notification_yamls);
         let revision = format!("config-{}", config_hash);
+        debug!(
+            revision = %revision,
+            config_hash = %config_hash,
+            notification_files = notification_yamls.len(),
+            "loaded config source"
+        );
 
         Ok(LoadedConfig {
             published: PublishedConfig {
@@ -66,6 +78,10 @@ impl ConfigSource {
         let git_dir = checkout.join(".git");
 
         if !git_dir.exists() {
+            info!(
+                checkout_dir = %checkout.display(),
+                "config repository checkout missing; cloning"
+            );
             if let Some(parent) = checkout.parent() {
                 fs::create_dir_all(parent)
                     .await
@@ -82,8 +98,14 @@ impl ConfigSource {
             )
             .await
             .context("failed to clone config repository")?;
+        } else {
+            debug!(
+                checkout_dir = %checkout.display(),
+                "config repository checkout exists"
+            );
         }
 
+        debug!(checkout_dir = %checkout.display(), "fetching config repository");
         run_git(
             Command::new("git")
                 .arg("-C")
@@ -94,6 +116,7 @@ impl ConfigSource {
         )
         .await
         .context("failed to fetch config repository")?;
+        debug!(checkout_dir = %checkout.display(), "resetting config repository to origin/HEAD");
         run_git(
             Command::new("git")
                 .arg("-C")
@@ -104,6 +127,7 @@ impl ConfigSource {
         )
         .await
         .context("failed to reset config repository to origin/HEAD")?;
+        debug!(checkout_dir = %checkout.display(), "cleaning config repository checkout");
         run_git(
             Command::new("git")
                 .arg("-C")
@@ -141,6 +165,11 @@ impl ConfigSource {
                     k8s_dir.display()
                 )
             })?;
+        debug!(
+            path = %path.display(),
+            cluster = %self.config.cluster_name,
+            "reading desired ping state"
+        );
 
         let yaml = fs::read_to_string(path)
             .await
@@ -148,6 +177,14 @@ impl ConfigSource {
         let state: DesiredPingState = serde_yaml::from_str(&yaml)
             .with_context(|| format!("failed to parse '{}'", path.display()))?;
         state.validate()?;
+        debug!(
+            path = %path.display(),
+            cluster = %state.cluster,
+            environment = ?state.environment,
+            internal_rules = state.matrix.internal.len(),
+            external_rules = state.matrix.external.len(),
+            "desired ping state parsed"
+        );
 
         Ok((yaml, state))
     }
@@ -168,6 +205,7 @@ impl ConfigSource {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if !is_yaml_file(&path) {
+                debug!(path = %path.display(), "skipping non-yaml notification file");
                 continue;
             }
 
@@ -181,12 +219,22 @@ impl ConfigSource {
                 .with_context(|| format!("failed to read '{}'", path.display()))?;
             let file: DesiredNotificationFile = serde_yaml::from_str(&yaml)
                 .with_context(|| format!("failed to parse '{}'", path.display()))?;
+            debug!(
+                name = %name,
+                path = %path.display(),
+                provider = %file.provider,
+                "notification file parsed"
+            );
 
             notification_yamls.insert(name.clone(), yaml);
             notification_files.insert(name, file);
         }
 
         let state = DesiredNotificationState::from_files(notification_files)?;
+        debug!(
+            destinations = state.destinations.len(),
+            "notification state aggregated"
+        );
         Ok((notification_yamls, state))
     }
 }

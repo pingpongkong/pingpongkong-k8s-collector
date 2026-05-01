@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, VecDeque},
     time::{Duration, Instant},
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[derive(Clone)]
 pub struct NotificationAlerter {
@@ -32,6 +32,11 @@ impl NotificationAlerter {
         destination: &NotificationDestination,
     ) -> anyhow::Result<bool> {
         if destination.provider.eq_ignore_ascii_case("discord") {
+            debug!(
+                destination = %name,
+                provider = %destination.provider,
+                "sending collector-updated Discord notification"
+            );
             self.send_discord_message(destination, "**PingPongKong collector updated**")
                 .await?;
             return Ok(true);
@@ -54,11 +59,23 @@ impl NotificationAlerter {
         report: &ConnectivityReport,
     ) -> anyhow::Result<bool> {
         if destination.provider.eq_ignore_ascii_case("discord") {
+            debug!(
+                destination = %name,
+                cluster = %report.cluster_name,
+                health = ?report.health_status(),
+                "sending Discord connectivity report"
+            );
             self.send_discord_report(destination, report).await?;
             return Ok(true);
         }
 
         if destination.provider.eq_ignore_ascii_case("sms") {
+            debug!(
+                destination = %name,
+                cluster = %report.cluster_name,
+                health = ?report.health_status(),
+                "sending SMS connectivity report"
+            );
             self.send_sms_report(destination, report).await?;
             return Ok(true);
         }
@@ -90,6 +107,7 @@ impl NotificationAlerter {
             avatar_url: destination.display.avatar_url.clone(),
         };
 
+        debug!("posting Discord webhook message");
         let response = self.client.post(webhook_url).json(&payload).send().await?;
         ensure_success(response, "discord webhook").await
     }
@@ -107,6 +125,7 @@ impl NotificationAlerter {
             .context("discord notification destination requires webhook settings")?;
         let webhook_url = webhook_url(&webhook.env_var)?;
         let report_json = serde_json::to_string_pretty(report)?;
+        let report_bytes = report_json.len();
         let health = report.health_status();
         let payload = json!({
             "content": format!(
@@ -127,6 +146,11 @@ impl NotificationAlerter {
                     .mime_str("application/json")?,
             );
 
+        debug!(
+            cluster = %report.cluster_name,
+            report_bytes,
+            "posting Discord webhook report attachment"
+        );
         let response = self.client.post(webhook_url).multipart(form).send().await?;
         ensure_success(response, "discord webhook").await
     }
@@ -157,6 +181,10 @@ impl NotificationAlerter {
             .json(&json!({ "message": message }))
             .send()
             .await?;
+        debug!(
+            cluster = %report.cluster_name,
+            "posted SMS webhook report"
+        );
         ensure_success(response, "sms webhook").await
     }
 }
