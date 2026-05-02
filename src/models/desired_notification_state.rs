@@ -362,11 +362,9 @@ telegram:
 "#,
         )
         .unwrap();
-        let state = DesiredNotificationState::from_files(BTreeMap::from([(
-            "telegram".to_string(),
-            file,
-        )]))
-        .unwrap();
+        let state =
+            DesiredNotificationState::from_files(BTreeMap::from([("telegram".to_string(), file)]))
+                .unwrap();
 
         let destination = &state.destinations["telegram"];
         assert_eq!(destination.provider, "telegram");
