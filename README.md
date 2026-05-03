@@ -77,8 +77,8 @@ DRY_RUN=false
 downward API field `metadata.namespace`. The ConfigMap name is always generated as
 `pingpongkong-{CONFIG_GIT_CLUSTERNAME}-ping-state`.
 
-`REPORT_NOTIFICATION_MODE` controls periodic connectivity report notifications. Use `ALWAYS` for
-the existing behavior, or `NON_HEALTHY` to notify only when the aggregate report health is not
+`REPORT_NOTIFICATION_MODE` controls periodic connectivity report notifications and defaults to
+`ALWAYS`. Use `NON_HEALTHY` to notify only when the aggregate report health is not
 `Healthy`.
 
 ## Notification Files

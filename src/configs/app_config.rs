@@ -94,6 +94,14 @@ impl ReportNotificationMode {
     }
 }
 
+impl Default for ReportNotificationMode {
+    /// Args: none.
+    /// Returns the report notification mode used when REPORT_NOTIFICATION_MODE is unset.
+    fn default() -> Self {
+        Self::Always
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SourceConfig {
     pub git_url: String,
@@ -172,7 +180,7 @@ fn log_level_from_env() -> anyhow::Result<LogLevel> {
 /// Args: none.
 /// Parses REPORT_NOTIFICATION_MODE from ALWAYS or NON_HEALTHY.
 fn report_notification_mode_from_env() -> anyhow::Result<ReportNotificationMode> {
-    let value = env_or("REPORT_NOTIFICATION_MODE", "ALWAYS");
+    let value = env_or("REPORT_NOTIFICATION_MODE", ReportNotificationMode::default().as_str());
     let normalized = value.trim().replace('-', "_").to_ascii_uppercase();
 
     match normalized.as_str() {
@@ -307,6 +315,23 @@ mod tests {
             config.report_notification_mode,
             ReportNotificationMode::NonHealthy
         );
+    }
+
+    #[test]
+    fn defaults_report_notification_mode_to_always() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+
+        // SAFETY: This test serializes env mutation and no other tests read these variables.
+        unsafe {
+            env::set_var("CONFIG_GIT_URL", "https://github.com/example/config.git");
+            env::set_var("CONFIG_GIT_CLUSTERNAME", "test-cluster");
+            env::remove_var("REPORT_NOTIFICATION_MODE");
+            env::remove_var("HTTP_ADDR");
+        }
+
+        let config = AppConfig::from_env().expect("config should load default notification mode");
+
+        assert_eq!(config.report_notification_mode, ReportNotificationMode::Always);
     }
 
     #[test]
