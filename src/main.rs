@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         collector_update_interval_secs = config.collector_update_interval.as_secs(),
         agent_check_interval_secs = config.agent_check_interval.as_secs(),
         agent_api_port = config.agent_api_port,
+        report_notification_mode = %config.report_notification_mode.as_str(),
         dry_run = config.dry_run,
         "collector starting"
     );

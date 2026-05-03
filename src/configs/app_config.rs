@@ -1,3 +1,4 @@
+use crate::models::NodeHealthStatus;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, time::Duration};
@@ -13,6 +14,7 @@ pub struct AppConfig {
     pub agent_api_port: u16,
     pub max_concurrent_agent_checks: usize,
     pub http_addr: SocketAddr,
+    pub report_notification_mode: ReportNotificationMode,
     pub dry_run: bool,
 }
 
@@ -37,6 +39,7 @@ impl AppConfig {
                 4096,
             )?,
             http_addr: collector_http_addr_from_env()?,
+            report_notification_mode: report_notification_mode_from_env()?,
             dry_run: bool_from_env("DRY_RUN", false)?,
         })
     }
@@ -61,6 +64,32 @@ impl LogLevel {
             Self::Info => "info",
             Self::Warn => "warn",
             Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub enum ReportNotificationMode {
+    Always,
+    NonHealthy,
+}
+
+impl ReportNotificationMode {
+    /// Args: `health_status` is the aggregate connectivity report health.
+    /// Returns whether a report with this health should trigger notifications.
+    pub fn should_notify(self, health_status: &NodeHealthStatus) -> bool {
+        match self {
+            Self::Always => true,
+            Self::NonHealthy => !matches!(health_status, NodeHealthStatus::Healthy),
+        }
+    }
+
+    /// Args: none.
+    /// Returns the stable environment/config label for this mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "ALWAYS",
+            Self::NonHealthy => "NON_HEALTHY",
         }
     }
 }
@@ -135,6 +164,22 @@ fn log_level_from_env() -> anyhow::Result<LogLevel> {
         "ERROR" => Ok(LogLevel::Error),
         value => anyhow::bail!(
             "LOG_LEVEL='{}' is invalid; expected TRACE, DEBUG, INFO, WARN, or ERROR",
+            value
+        ),
+    }
+}
+
+/// Args: none.
+/// Parses REPORT_NOTIFICATION_MODE from ALWAYS or NON_HEALTHY.
+fn report_notification_mode_from_env() -> anyhow::Result<ReportNotificationMode> {
+    let value = env_or("REPORT_NOTIFICATION_MODE", "ALWAYS");
+    let normalized = value.trim().replace('-', "_").to_ascii_uppercase();
+
+    match normalized.as_str() {
+        "ALWAYS" => Ok(ReportNotificationMode::Always),
+        "NON_HEALTHY" | "NOT_HEALTHY" | "UNHEALTHY" => Ok(ReportNotificationMode::NonHealthy),
+        value => anyhow::bail!(
+            "REPORT_NOTIFICATION_MODE='{}' is invalid; expected ALWAYS or NON_HEALTHY",
             value
         ),
     }
@@ -219,7 +264,8 @@ fn bool_from_env(name: &str, default: bool) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, ReportNotificationMode};
+    use crate::models::NodeHealthStatus;
     use std::{env, net::SocketAddr, sync::Mutex};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -240,9 +286,33 @@ mod tests {
         let config = AppConfig::from_env().expect("config should load from helm env values");
 
         assert_eq!(config.agent_api_port, 9090);
+        assert_eq!(config.http_addr, SocketAddr::from(([0, 0, 0, 0], 9091)));
+    }
+
+    #[test]
+    fn reads_report_notification_mode_env_value() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+
+        // SAFETY: This test serializes env mutation and no other tests read these variables.
+        unsafe {
+            env::set_var("CONFIG_GIT_URL", "https://github.com/example/config.git");
+            env::set_var("CONFIG_GIT_CLUSTERNAME", "test-cluster");
+            env::set_var("REPORT_NOTIFICATION_MODE", "NON_HEALTHY");
+            env::remove_var("HTTP_ADDR");
+        }
+
+        let config = AppConfig::from_env().expect("config should load notification mode");
+
         assert_eq!(
-            config.http_addr,
-            SocketAddr::from(([0, 0, 0, 0], 9091))
+            config.report_notification_mode,
+            ReportNotificationMode::NonHealthy
         );
+    }
+
+    #[test]
+    fn non_healthy_report_notification_mode_skips_healthy_reports() {
+        assert!(!ReportNotificationMode::NonHealthy.should_notify(&NodeHealthStatus::Healthy));
+        assert!(ReportNotificationMode::NonHealthy.should_notify(&NodeHealthStatus::Degraded));
+        assert!(ReportNotificationMode::NonHealthy.should_notify(&NodeHealthStatus::Unreachable));
     }
 }

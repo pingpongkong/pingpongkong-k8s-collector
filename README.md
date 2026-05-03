@@ -69,12 +69,17 @@ COLLECTOR_API_PORT=8081
 HTTP_ADDR=0.0.0.0:8081
 AGENT_API_PORT=8080
 MAX_CONCURRENT_AGENT_CHECKS=64
+REPORT_NOTIFICATION_MODE=ALWAYS
 DRY_RUN=false
 ```
 
 `K8S_NAMESPACE` should be set to the namespace where the collector and app live, usually from the pod
 downward API field `metadata.namespace`. The ConfigMap name is always generated as
 `pingpongkong-{CONFIG_GIT_CLUSTERNAME}-ping-state`.
+
+`REPORT_NOTIFICATION_MODE` controls periodic connectivity report notifications. Use `ALWAYS` for
+the existing behavior, or `NON_HEALTHY` to notify only when the aggregate report health is not
+`Healthy`.
 
 ## Notification Files
 

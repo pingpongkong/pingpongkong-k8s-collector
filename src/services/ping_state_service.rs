@@ -88,12 +88,28 @@ impl PingStateService {
     /// Args: `report` is the latest connectivity report.
     /// Sends the report to configured notification destinations with simple rate limiting.
     async fn send_report_notifications(&mut self, report: &ConnectivityReport) {
+        let health_status = report.health_status();
+        if !self
+            .config
+            .report_notification_mode
+            .should_notify(&health_status)
+        {
+            debug!(
+                cluster = %report.cluster_name,
+                health = ?health_status,
+                mode = %self.config.report_notification_mode.as_str(),
+                "skipping connectivity report notification by mode"
+            );
+            return;
+        }
+
         let Some(notification_state) = self.state.current_notification_state() else {
             debug!("notification state not available; skipping report notifications");
             return;
         };
         debug!(
             destinations = notification_state.destinations.len(),
+            mode = %self.config.report_notification_mode.as_str(),
             "sending connectivity report notifications"
         );
 
