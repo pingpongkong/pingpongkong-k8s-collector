@@ -216,3 +216,33 @@ fn bool_from_env(name: &str, default: bool) -> anyhow::Result<bool> {
         Err(_) => Ok(default),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+    use std::{env, net::SocketAddr, sync::Mutex};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn reads_helm_port_env_values() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+
+        // SAFETY: This test serializes env mutation and no other tests read these variables.
+        unsafe {
+            env::set_var("CONFIG_GIT_URL", "https://github.com/example/config.git");
+            env::set_var("CONFIG_GIT_CLUSTERNAME", "test-cluster");
+            env::set_var("AGENT_API_PORT", "9090");
+            env::set_var("COLLECTOR_API_PORT", "9091");
+            env::remove_var("HTTP_ADDR");
+        }
+
+        let config = AppConfig::from_env().expect("config should load from helm env values");
+
+        assert_eq!(config.agent_api_port, 9090);
+        assert_eq!(
+            config.http_addr,
+            SocketAddr::from(([0, 0, 0, 0], 9091))
+        );
+    }
+}
