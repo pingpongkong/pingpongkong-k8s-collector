@@ -3,7 +3,7 @@ use crate::models::{
 };
 use anyhow::Context;
 use reqwest::{Client, multipart};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
     time::{Duration, Instant},
@@ -111,8 +111,7 @@ impl NotificationAlerter {
                 health = ?report.health_status(),
                 "sending Telegram connectivity report"
             );
-            self.send_telegram_message(destination, &report_message(report))
-                .await?;
+            self.send_telegram_report(destination, report).await?;
             return Ok(true);
         }
 
@@ -244,7 +243,7 @@ impl NotificationAlerter {
         let response = self
             .client
             .post(webhook_url)
-            .json(&json!({ "text": content }))
+            .json(&teams_payload(content))
             .send()
             .await?;
         ensure_success(response, "teams webhook").await
@@ -286,23 +285,68 @@ impl NotificationAlerter {
             .telegram
             .as_ref()
             .context("telegram notification destination requires telegram settings")?;
-        let token = telegram_config_value(
+        let credentials = telegram_credentials(
             &telegram.bot_token,
             &telegram.bot_token_env_var,
-            "Telegram bot token",
-        )?;
-        let chat_id = telegram_config_value(
             &telegram.chat_id,
             &telegram.chat_id_env_var,
-            "Telegram chat id",
         )?;
         let response = self
             .client
-            .post(format!("https://api.telegram.org/bot{token}/sendMessage"))
+            .post(format!(
+                "https://api.telegram.org/bot{}/sendMessage",
+                credentials.token
+            ))
             .json(&json!({
-                "chat_id": chat_id,
+                "chat_id": credentials.chat_id,
                 "text": content,
             }))
+            .send()
+            .await?;
+        ensure_success(response, "telegram api").await
+    }
+
+    /// Args: `destination` is one Telegram notification destination and `report` is the latest connectivity report.
+    /// Sends a Telegram message with the full report attached as a JSON document.
+    async fn send_telegram_report(
+        &self,
+        destination: &NotificationDestination,
+        report: &ConnectivityReport,
+    ) -> anyhow::Result<()> {
+        let telegram = destination
+            .telegram
+            .as_ref()
+            .context("telegram notification destination requires telegram settings")?;
+        let credentials = telegram_credentials(
+            &telegram.bot_token,
+            &telegram.bot_token_env_var,
+            &telegram.chat_id,
+            &telegram.chat_id_env_var,
+        )?;
+        let report_json = serde_json::to_string_pretty(report)?;
+        let report_bytes = report_json.len();
+        let form = multipart::Form::new()
+            .text("chat_id", credentials.chat_id)
+            .text("caption", report_message(report))
+            .part(
+                "document",
+                multipart::Part::bytes(report_json.into_bytes())
+                    .file_name("connectivity-report.json")
+                    .mime_str("application/json")?,
+            );
+
+        debug!(
+            cluster = %report.cluster_name,
+            report_bytes,
+            "posting Telegram report document"
+        );
+        let response = self
+            .client
+            .post(format!(
+                "https://api.telegram.org/bot{}/sendDocument",
+                credentials.token
+            ))
+            .multipart(form)
             .send()
             .await?;
         ensure_success(response, "telegram api").await
@@ -439,6 +483,43 @@ fn webhook_url(value: &str) -> anyhow::Result<String> {
     }
 
     std::env::var(value).with_context(|| format!("{value} must contain the webhook URL"))
+}
+
+/// Args: `content` is the notification text body.
+/// Builds a Teams webhook payload compatible with simple text and MessageCard-style receivers.
+fn teams_payload(content: &str) -> Value {
+    let title = content
+        .lines()
+        .next()
+        .filter(|line| !line.trim().is_empty())
+        .unwrap_or("PingPongKong notification");
+
+    json!({
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "summary": title,
+        "title": title,
+        "text": content,
+    })
+}
+
+struct TelegramCredentials {
+    token: String,
+    chat_id: String,
+}
+
+/// Args: Telegram token/chat id values and their optional environment variable names.
+/// Resolves credentials from plaintext first, then environment variables.
+fn telegram_credentials(
+    bot_token: &Option<String>,
+    bot_token_env_var: &Option<String>,
+    chat_id: &Option<String>,
+    chat_id_env_var: &Option<String>,
+) -> anyhow::Result<TelegramCredentials> {
+    Ok(TelegramCredentials {
+        token: telegram_config_value(bot_token, bot_token_env_var, "Telegram bot token")?,
+        chat_id: telegram_config_value(chat_id, chat_id_env_var, "Telegram chat id")?,
+    })
 }
 
 /// Args: `plain_text` is an optional literal secret value, `env_var` is an optional environment variable name, and `label` describes the secret.
@@ -586,5 +667,16 @@ mod tests {
         assert!(limiter.allow("redis", 2, window));
         assert!(!limiter.allow("redis", 2, window));
         assert!(limiter.allow("postgres", 2, window));
+    }
+
+    /// Args: none.
+    /// Verifies that Teams payloads keep a simple text field while adding card metadata.
+    #[test]
+    fn teams_payload_keeps_text_body() {
+        let payload = teams_payload("PingPongKong report\ncluster: kubernetes");
+
+        assert_eq!(payload["text"], "PingPongKong report\ncluster: kubernetes");
+        assert_eq!(payload["title"], "PingPongKong report");
+        assert_eq!(payload["@type"], "MessageCard");
     }
 }
