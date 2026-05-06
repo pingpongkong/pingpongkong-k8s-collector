@@ -141,16 +141,7 @@ impl NotificationDestination {
                 )
             })?;
 
-            anyhow::ensure!(
-                !telegram.bot_token_env_var.trim().is_empty(),
-                "desired notification destination '{}' telegram.bot_token_env_var cannot be empty",
-                name
-            );
-            anyhow::ensure!(
-                !telegram.chat_id_env_var.trim().is_empty(),
-                "desired notification destination '{}' telegram.chat_id_env_var cannot be empty",
-                name
-            );
+            telegram.validate(name)?;
         }
 
         anyhow::ensure!(
@@ -175,8 +166,38 @@ pub struct Webhook {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Telegram {
-    pub bot_token_env_var: String,
-    pub chat_id_env_var: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_token_env_var: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id_env_var: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
+}
+
+impl Telegram {
+    /// Args: `name` identifies the parent notification destination.
+    /// Validates Telegram credential source settings.
+    fn validate(&self, name: &str) -> anyhow::Result<()> {
+        validate_optional_setting(name, "telegram.bot_token_env_var", &self.bot_token_env_var)?;
+        validate_optional_setting(name, "telegram.chat_id_env_var", &self.chat_id_env_var)?;
+        validate_optional_setting(name, "telegram.bot_token", &self.bot_token)?;
+        validate_optional_setting(name, "telegram.chat_id", &self.chat_id)?;
+
+        anyhow::ensure!(
+            has_configured_value(&self.bot_token) || has_configured_value(&self.bot_token_env_var),
+            "desired notification destination '{}' telegram.bot_token or telegram.bot_token_env_var is required",
+            name
+        );
+        anyhow::ensure!(
+            has_configured_value(&self.chat_id) || has_configured_value(&self.chat_id_env_var),
+            "desired notification destination '{}' telegram.chat_id or telegram.chat_id_env_var is required",
+            name
+        );
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -251,6 +272,33 @@ fn provider_uses_webhook(provider: &str) -> bool {
         || provider.eq_ignore_ascii_case("teams")
         || provider.eq_ignore_ascii_case("email")
         || provider.eq_ignore_ascii_case("sms")
+}
+
+/// Args: `value` is an optional scalar config setting.
+/// Returns true when the setting exists and contains non-whitespace content.
+fn has_configured_value(value: &Option<String>) -> bool {
+    value
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+/// Args: `name` identifies the notification destination, `field` labels the setting, and `value` is the configured value.
+/// Rejects present-but-empty optional string settings.
+fn validate_optional_setting(
+    name: &str,
+    field: &str,
+    value: &Option<String>,
+) -> anyhow::Result<()> {
+    if let Some(value) = value {
+        anyhow::ensure!(
+            !value.trim().is_empty(),
+            "desired notification destination '{}' {} cannot be empty",
+            name,
+            field
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -369,8 +417,59 @@ telegram:
         let destination = &state.destinations["telegram"];
         assert_eq!(destination.provider, "telegram");
         assert_eq!(
-            destination.telegram.as_ref().unwrap().bot_token_env_var,
-            "TELEGRAM_BOT_TOKEN"
+            destination
+                .telegram
+                .as_ref()
+                .unwrap()
+                .bot_token_env_var
+                .as_deref(),
+            Some("TELEGRAM_BOT_TOKEN")
         );
+    }
+
+    /// Args: none.
+    /// Verifies that Telegram notification files may carry plaintext credentials.
+    #[test]
+    fn parses_plaintext_telegram_notification_file() {
+        let file: DesiredNotificationFile = serde_yaml::from_str(
+            r#"
+version: "1.0"
+provider: "telegram"
+telegram:
+  bot_token: "123456789:ABC"
+  chat_id: "987654321"
+"#,
+        )
+        .unwrap();
+        let state =
+            DesiredNotificationState::from_files(BTreeMap::from([("telegram".to_string(), file)]))
+                .unwrap();
+
+        let telegram = state.destinations["telegram"].telegram.as_ref().unwrap();
+        assert_eq!(telegram.bot_token.as_deref(), Some("123456789:ABC"));
+        assert_eq!(telegram.chat_id.as_deref(), Some("987654321"));
+    }
+
+    /// Args: none.
+    /// Verifies Telegram validation requires a chat id source.
+    #[test]
+    fn rejects_telegram_notification_without_chat_id_source() {
+        let file: DesiredNotificationFile = serde_yaml::from_str(
+            r#"
+version: "1.0"
+provider: "telegram"
+telegram:
+  bot_token: "123456789:ABC"
+"#,
+        )
+        .unwrap();
+
+        let error =
+            DesiredNotificationState::from_files(BTreeMap::from([("telegram".to_string(), file)]))
+                .unwrap_err();
+
+        assert!(error.to_string().contains(
+            "desired notification destination 'telegram' telegram.chat_id or telegram.chat_id_env_var is required"
+        ));
     }
 }

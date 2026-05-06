@@ -283,18 +283,16 @@ impl NotificationAlerter {
             .telegram
             .as_ref()
             .context("telegram notification destination requires telegram settings")?;
-        let token = std::env::var(&telegram.bot_token_env_var).with_context(|| {
-            format!(
-                "{} must contain the Telegram bot token",
-                telegram.bot_token_env_var
-            )
-        })?;
-        let chat_id = std::env::var(&telegram.chat_id_env_var).with_context(|| {
-            format!(
-                "{} must contain the Telegram chat id",
-                telegram.chat_id_env_var
-            )
-        })?;
+        let token = telegram_config_value(
+            &telegram.bot_token,
+            &telegram.bot_token_env_var,
+            "Telegram bot token",
+        )?;
+        let chat_id = telegram_config_value(
+            &telegram.chat_id,
+            &telegram.chat_id_env_var,
+            "Telegram chat id",
+        )?;
         let response = self
             .client
             .post(format!("https://api.telegram.org/bot{token}/sendMessage"))
@@ -438,6 +436,30 @@ fn webhook_url(value: &str) -> anyhow::Result<String> {
     }
 
     std::env::var(value).with_context(|| format!("{value} must contain the webhook URL"))
+}
+
+/// Args: `plain_text` is an optional literal secret value, `env_var` is an optional environment variable name, and `label` describes the secret.
+/// Resolves a Telegram setting from plaintext first, then an environment variable.
+fn telegram_config_value(
+    plain_text: &Option<String>,
+    env_var: &Option<String>,
+    label: &str,
+) -> anyhow::Result<String> {
+    if let Some(value) = plain_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(value.to_string());
+    }
+
+    let env_var = env_var
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{label} must be configured with a plaintext value or env var"))?;
+
+    std::env::var(env_var).with_context(|| format!("{env_var} must contain the {label}"))
 }
 
 #[derive(Debug, Default)]

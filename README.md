@@ -95,7 +95,17 @@ webhook:
   env_var: "TEAMS_WEBHOOK_URL"
 ```
 
-Telegram uses bot token and chat id environment variables:
+Telegram can use plaintext bot token and chat id values:
+
+```yaml
+version: "1.0"
+provider: "telegram"
+telegram:
+  bot_token: "123456789:ABC"
+  chat_id: "987654321"
+```
+
+Or environment variable names:
 
 ```yaml
 version: "1.0"
