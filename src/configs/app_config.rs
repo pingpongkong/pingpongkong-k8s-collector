@@ -31,7 +31,7 @@ impl AppConfig {
             source,
             collector_update_interval: human_duration_from_env("COLLECTOR_UPDATE_INTERVAL", "5m")?,
             agent_check_interval: human_duration_from_env("AGENT_CHECK_INTERVAL", "5m")?,
-            agent_api_port: parse_env("AGENT_API_PORT", 8080)?,
+            agent_api_port: parse_env("AGENT_API_PORT", 30090)?,
             max_concurrent_agent_checks: parse_bounded_usize(
                 "MAX_CONCURRENT_AGENT_CHECKS",
                 64,
@@ -154,10 +154,10 @@ fn collector_http_addr_from_env() -> anyhow::Result<SocketAddr> {
     if let Ok(value) = env::var("HTTP_ADDR") {
         return value
             .parse()
-            .context("HTTP_ADDR must be a socket address, for example 0.0.0.0:8081");
+            .context("HTTP_ADDR must be a socket address, for example 0.0.0.0:30091");
     }
 
-    let port = parse_env("COLLECTOR_API_PORT", 8081)?;
+    let port = parse_env("COLLECTOR_API_PORT", 30091)?;
     Ok(SocketAddr::from(([0, 0, 0, 0], port)))
 }
 
