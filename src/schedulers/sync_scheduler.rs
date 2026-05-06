@@ -20,7 +20,7 @@ pub async fn update_collector_state_loop(
     );
     let mut interval = time::interval(config.collector_update_interval);
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    let service = ConfigSyncService::new(config, state, source, k8s);
+    let service = ConfigSyncService::new(config, state, source, k8s)?;
 
     loop {
         interval.tick().await;

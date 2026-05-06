@@ -25,7 +25,7 @@ impl PingStateService {
             state,
             k8s,
             agent_client: AgentClient::new()?,
-            alerter: NotificationAlerter::new(),
+            alerter: NotificationAlerter::new()?,
             limiter: AlertRateLimiter::default(),
         })
     }

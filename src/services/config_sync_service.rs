@@ -22,14 +22,14 @@ impl ConfigSyncService {
         state: AppState,
         source: ConfigSource,
         k8s: Option<K8sClient>,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
             config,
             state,
             source,
             k8s,
-            alerter: NotificationAlerter::new(),
-        }
+            alerter: NotificationAlerter::new()?,
+        })
     }
 
     /// Args: none.

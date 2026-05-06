@@ -17,11 +17,14 @@ pub struct NotificationAlerter {
 
 impl NotificationAlerter {
     /// Args: none.
-    /// Builds the reusable notification HTTP client.
-    pub fn new() -> Self {
-        Self {
-            client: Client::new(),
-        }
+    /// Builds the reusable notification HTTP client with a bounded provider request timeout.
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            client: Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .context("failed to build notification HTTP client")?,
+        })
     }
 
     /// Args: `name` identifies the destination and `destination` describes the provider.
